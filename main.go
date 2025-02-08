@@ -2,6 +2,9 @@ package main
 
 import (
 	"github.com/labstack/echo/v4"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"log"
 	"net/http"
 	"strconv"
 )
@@ -15,7 +18,18 @@ type Response struct {
 	Message string `json:"message"`
 }
 
-var messages = make(map[int]Message)
+var db *gorm.DB
+
+func initDB() {
+	dsn := "host=localhost user=postgres password=yourpassword dbname=postgres port=5432 sslmode=disable"
+	var err error
+	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatal("Failed to connect to database: ", err)
+	}
+	db.AutoMigrate(&Message{})
+}
+
 var nextID = 1
 
 func patchHadler(c echo.Context) error {
@@ -29,13 +43,13 @@ func patchHadler(c echo.Context) error {
 	}
 	var updatedMessage Message
 	if err := c.Bind(&updatedMessage); err != nil {
+		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Invaild input"})
+	}
+
+	if err := db.Model(&Message{}).Where("id = ?", id).Update("text", updatedMessage.Text).Error; err != nil {
 		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Could not update the message"})
 	}
-	if _, exists := messages[id]; !exists {
-		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Message was not found"})
-	}
-	updatedMessage.ID = id
-	messages[id] = updatedMessage
+
 	return c.JSON(http.StatusOK, Response{Status: "success", Message: "Message updated successfully"})
 }
 
@@ -48,32 +62,35 @@ func deleteHandler(c echo.Context) error {
 			Message: "id not correct",
 		})
 	}
-	if _, exists := messages[id]; !exists {
-		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Message was not found"})
+	if err := db.Where("id = ?", id).Delete(&Message{}).Error; err != nil {
+		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Could not delete the message"})
 	}
-	delete(messages, id)
 	return c.JSON(http.StatusOK, Response{Status: "success", Message: "Message deleted successfully"})
 }
 
 func getHandler(c echo.Context) error {
-	var msgSlice []Message
+	var messages []Message
 
-	for _, msg := range messages {
-		msgSlice = append(msgSlice, msg)
+	if err := db.Find(&messages).Error; err != nil {
+		return c.JSON(http.StatusBadRequest, Response{
+			Status:  "error",
+			Message: "Could not find the messages"})
 	}
-	return c.JSON(http.StatusOK, msgSlice)
+
+	return c.JSON(http.StatusOK, &messages)
 }
 func postHandler(c echo.Context) error {
 	var message Message
 	if err := c.Bind(&message); err != nil {
 		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Could not add the message"})
 	}
-	message.ID = nextID
-	nextID++
-	messages[message.ID] = message
-	return c.JSON(http.StatusCreated, Response{Status: "ok", Message: "Message added successfully"})
+	if err := db.Create(&message).Error; err != nil {
+		return c.JSON(http.StatusBadRequest, Response{Status: "error", Message: "Could not created the message"})
+	}
+	return c.JSON(http.StatusOK, Response{Status: "ok", Message: "Message created successfully"})
 }
 func main() {
+	initDB()
 	e := echo.New()
 	e.GET("/messages", getHandler)
 	e.POST("/messages", postHandler)
